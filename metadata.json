@@ -1,0 +1,6 @@
+{
+  "name": "Fabric Reality",
+  "description": "Premier tailoring marketplace connecting skilled bespoke tailors and fashion customers with smart geolocation matching, AWS S3 portfolio publishing, in-app messaging, WhatsApp integration, real-time ratings, and full administrative platform.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
