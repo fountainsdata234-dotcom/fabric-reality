@@ -1325,3 +1325,6 @@ async function startServer() {
 startServer().catch((err) => {
   console.error('Failed to start server:', err);
 });
+
+// Export the app for Vercel
+export default app;
