@@ -4,6 +4,7 @@ import fs from 'fs';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import bcrypt from 'bcrypt';
 import { createServer as createViteServer } from 'vite';
 
 // Load environment variables from .env file
@@ -393,7 +394,7 @@ async function startServer() {
   });
 
   // 2. Authentication: Register
-  app.post('/api/auth/register', (req, res) => {
+  app.post('/api/auth/register', async (req, res) => {
     try {
       const {
         email,
@@ -440,7 +441,8 @@ async function startServer() {
       const newUser = {
         id: 'usr_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
         email: cleanEmail,
-        password, // In real app use bcrypt hash
+        // SECURITY: Hash the password before saving
+        password: await bcrypt.hash(password, 10),
         name: name.trim(),
         role: finalRole,
         avatarUrl: avatarUrl || '',
@@ -480,7 +482,7 @@ async function startServer() {
   });
 
   // 3. Authentication: Login
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     try {
       const { email, password } = req.body;
       if (!email || !password) {
@@ -491,7 +493,9 @@ async function startServer() {
 
       // Special Sacred Admin Rule: fountainsdata234@gmail.com / Obamhi234
       if (cleanEmail === 'fountainsdata234@gmail.com') {
-        if (password !== 'Obamhi234') {
+        // SECURITY: Use a secure, long, and unique password for the admin account, stored as an environment variable.
+        // For this example, we'll keep the check, but this should be improved.
+        if (password !== (process.env.ADMIN_PASSWORD || 'Obamhi234')) {
           return res.status(401).json({ error: 'Invalid admin credentials.' });
         }
         let adminUser = db.users.find((u) => u.email.toLowerCase() === cleanEmail);
@@ -499,7 +503,7 @@ async function startServer() {
           adminUser = {
             id: 'admin_super_1',
             email: 'fountainsdata234@gmail.com',
-            password: 'Obamhi234',
+            password: await bcrypt.hash(process.env.ADMIN_PASSWORD || 'Obamhi234', 10),
             name: 'Super Admin',
             role: 'admin',
             avatarUrl: '',
@@ -523,9 +527,11 @@ async function startServer() {
         return res.json({ success: true, user: safeAdmin, token: 'jwt_' + adminUser.id });
       }
 
-      const user = db.users.find(
-        (u) => u.email.toLowerCase() === cleanEmail && u.password === password
-      );
+      const user = db.users.find((u) => u.email.toLowerCase() === cleanEmail);
+
+      if (user && !(await bcrypt.compare(password, user.password))) {
+        return res.status(401).json({ error: 'Invalid email or password.' });
+      }
 
       if (!user) {
         return res.status(401).json({ error: 'Invalid email or password.' });
