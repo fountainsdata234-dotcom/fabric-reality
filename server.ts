@@ -255,20 +255,12 @@ function saveDatabase(db: DatabaseSchema) {
 
 let db = loadDatabase();
 
-const app = express();
+const app = express(); // Initialize Express App
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// --- API Routes ---
 async function startServer() {
-  const PORT = Number(process.env.PORT) || 3001; // Ensure PORT is a number
-
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-  // --- API Routes ---
-
-  // Health check
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
-  });
 
   // --- Location API Proxy Endpoints ---
   app.get('/api/locations/countries', async (req, res) => {
@@ -1308,30 +1300,36 @@ async function startServer() {
     }
   });
 
-  // --- Vite Middleware for Development / Static serving for Production ---
-  // This MUST be placed AFTER all API routes.
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+  // This function will now only handle starting the server and middleware.
+  // It is called at the bottom of the file.
+  async function startLocalServer() {
+    const PORT = Number(process.env.PORT) || 3001; // Ensure PORT is a number
+
+    // --- Vite Middleware for Development / Static serving for Production ---
+    // This MUST be placed AFTER all API routes.
+    if (process.env.NODE_ENV !== 'production') {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
+
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Fabric Reality Server running at http://localhost:${PORT}`);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Fabric Reality Server running at http://localhost:${PORT}`);
+  startLocalServer().catch((err) => {
+    console.error('Failed to start local server:', err);
   });
 }
-
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-});
 
 // Export the app for Vercel
 export default app;
