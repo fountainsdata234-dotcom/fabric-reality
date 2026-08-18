@@ -254,8 +254,9 @@ function saveDatabase(db: DatabaseSchema) {
 
 let db = loadDatabase();
 
+const app = express();
+
 async function startServer() {
-  const app = express();
   const PORT = Number(process.env.PORT) || 3001; // Ensure PORT is a number
 
   app.use(express.json({ limit: '50mb' }));
