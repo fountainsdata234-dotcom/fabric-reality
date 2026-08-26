@@ -23,14 +23,16 @@ import { Logo } from './Logo';
 import { COUNTRIES } from '../data/countries';
 
 interface LandingPageProps {
-  onOpenAuth: (mode: 'login' | 'register_tailor' | 'register_customer') => void;
-  openLegalModal: (type: 'terms' | 'privacy') => void;
+  onOpenAuth: (mode?: 'login' | 'register_tailor' | 'register_customer') => void;
+  openLegalModal?: (type: 'terms' | 'privacy') => void;
+  onOpenLegal?: (type: 'terms' | 'privacy') => void;
   onExploreClick: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onOpenAuth,
   openLegalModal,
+  onOpenLegal,
   onExploreClick,
 }) => {
   const [selectedDemoCountry, setSelectedDemoCountry] = useState('Nigeria');

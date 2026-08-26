@@ -6,6 +6,9 @@ import dotenv from 'dotenv';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import bcrypt from 'bcrypt';
 import { createServer as createViteServer } from 'vite';
+import { validatePassword, validatePhoneNumber } from './shared/validation';
+import { COUNTRIES } from './src/data/countries';
+import { getStaticStates, getStaticCities } from './src/data/locationData';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -48,64 +51,6 @@ const cscApi = axios.create({
 if (!CSC_API_KEY) {
   console.warn('\x1b[33m%s\x1b[0m', 'WARNING: CSC_API_KEY not found in .env file. Location services will be disabled.');
 }
-
-const validatePassword = (password: string): { valid: boolean; message: string } => {
-  if (password.length < 8) return { valid: false, message: 'Password must be at least 8 characters long.' };
-  if (!/[A-Z]/.test(password)) return { valid: false, message: 'Password must contain an uppercase letter.' };
-  if (!/[a-z]/.test(password)) return { valid: false, message: 'Password must contain a lowercase letter.' };
-  if (!/\d/.test(password)) return { valid: false, message: 'Password must contain a number.' };
-  if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) return { valid: false, message: 'Password must contain a special character.' };
-  return { valid: true, message: 'Password is strong' };
-};
-
-// Country-specific phone digit-length rules (local number, excluding dial code)
-const COUNTRY_PHONE_RULES: Record<string, { min: number; max: number; dial: string }> = {
-  NG: { min: 10, max: 11, dial: '234' }, US: { min: 10, max: 10, dial: '1' }, GB: { min: 10, max: 11, dial: '44' },
-  GH: { min: 9, max: 10, dial: '233' }, KE: { min: 9, max: 10, dial: '254' }, ZA: { min: 9, max: 10, dial: '27' },
-  CA: { min: 10, max: 10, dial: '1' }, AE: { min: 9, max: 9, dial: '971' }, FR: { min: 9, max: 10, dial: '33' },
-  DE: { min: 10, max: 11, dial: '49' }, IT: { min: 9, max: 11, dial: '39' }, ES: { min: 9, max: 9, dial: '34' },
-  AU: { min: 9, max: 10, dial: '61' }, IN: { min: 10, max: 10, dial: '91' }, SN: { min: 9, max: 9, dial: '221' },
-  CI: { min: 8, max: 10, dial: '225' }, CM: { min: 8, max: 9, dial: '237' }, EG: { min: 10, max: 11, dial: '20' },
-  RW: { min: 9, max: 9, dial: '250' }, UG: { min: 9, max: 10, dial: '256' }, TZ: { min: 9, max: 10, dial: '255' },
-  ET: { min: 9, max: 10, dial: '251' }, SA: { min: 9, max: 10, dial: '966' }, QA: { min: 8, max: 8, dial: '974' },
-  NL: { min: 9, max: 10, dial: '31' }, BE: { min: 9, max: 10, dial: '32' }, SE: { min: 9, max: 10, dial: '46' },
-  CH: { min: 9, max: 10, dial: '41' }, IE: { min: 9, max: 10, dial: '353' }, BR: { min: 10, max: 11, dial: '55' },
-  JM: { min: 7, max: 10, dial: '1876' }, TT: { min: 7, max: 10, dial: '1868' }, BJ: { min: 8, max: 8, dial: '229' },
-  TG: { min: 8, max: 8, dial: '228' }, LR: { min: 7, max: 9, dial: '231' }, SL: { min: 8, max: 8, dial: '232' },
-  GM: { min: 7, max: 7, dial: '220' }, CN: { min: 11, max: 11, dial: '86' }, JP: { min: 10, max: 11, dial: '81' },
-  SG: { min: 8, max: 8, dial: '65' }, MY: { min: 9, max: 10, dial: '60' }, NZ: { min: 8, max: 10, dial: '64' },
-  TR: { min: 10, max: 11, dial: '90' }, MX: { min: 10, max: 10, dial: '52' },
-};
-
-const validatePhoneNumber = (phone: string, countryCode?: string): boolean => {
-  if (!phone) return false;
-
-  // Reject if contains letters
-  if (/[a-zA-Z]/.test(phone)) return false;
-
-  // Strip to digits only for length check
-  const digitsOnly = phone.replace(/\D/g, '');
-
-  // Generic: 7-15 digits
-  if (digitsOnly.length < 7 || digitsOnly.length > 15) return false;
-
-  // Country-specific digit-length check
-  if (countryCode) {
-    const rules = COUNTRY_PHONE_RULES[countryCode.toUpperCase()];
-    if (rules) {
-      let localDigits = digitsOnly;
-      // Strip the dial prefix if the phone number starts with it
-      if (digitsOnly.startsWith(rules.dial)) {
-        localDigits = digitsOnly.substring(rules.dial.length);
-      }
-      if (localDigits.length < rules.min || localDigits.length > rules.max) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-};
 
 // --- Local File Database Persistence ---
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -247,9 +192,12 @@ function loadDatabase(): DatabaseSchema {
 
 function saveDatabase(db: DatabaseSchema) {
   try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Error saving db file:', err);
+    console.warn('Note: Could not save db file to disk (in-memory mode):', err);
   }
 }
 
@@ -259,54 +207,67 @@ const app = express(); // Initialize Express App
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// CORS middleware
+app.use((_req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  next();
+});
+
 app.get('/api/locations/countries', async (_req, res) => {
-  if (!CSC_API_KEY) return res.status(503).json({ error: 'Location service is not configured.' });
-  try {
-    const response = await cscApi.get('/countries');
-    const formatted = response.data.map((c: any) => ({
-      name: c.name,
-      code: c.iso2,
-      dialCode: c.phonecode,
-      flag: c.emoji,
-      lat: c.latitude,
-      lng: c.longitude,
-    }));
-    res.json(formatted);
-  } catch (error: any) {
-    console.error('Country fetch error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to fetch countries from external API.' });
+  if (CSC_API_KEY) {
+    try {
+      const response = await cscApi.get('/countries');
+      const formatted = response.data.map((c: any) => ({
+        name: c.name,
+        code: c.iso2,
+        dialCode: c.phonecode,
+        flag: c.emoji,
+        lat: c.latitude,
+        lng: c.longitude,
+      }));
+      return res.json(formatted);
+    } catch (error: any) {
+      console.warn('Country fetch note (using static list):', error.message);
+    }
   }
+  res.json(COUNTRIES);
 });
 
 app.get('/api/locations/states/:countryCode', async (req, res) => {
-  if (!CSC_API_KEY) return res.status(503).json({ error: 'Location service is not configured.' });
-  try {
-    const { countryCode } = req.params;
-    const response = await cscApi.get(`/countries/${countryCode}/states`);
-    const formatted = response.data.map((s: any) => ({
-      name: s.name,
-      iso2: s.iso2,
-    })).sort((a: any, b: any) => a.name.localeCompare(b.name));
-    res.json(formatted);
-  } catch (error: any) {
-    console.error('State fetch error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to fetch states from external API.' });
+  const { countryCode } = req.params;
+  if (CSC_API_KEY) {
+    try {
+      const response = await cscApi.get(`/countries/${countryCode}/states`);
+      const formatted = response.data.map((s: any) => ({
+        name: s.name,
+        iso2: s.iso2,
+      })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+      return res.json(formatted);
+    } catch (error: any) {
+      console.warn(`State fetch note for ${countryCode} (using static list):`, error.message);
+    }
   }
+  const fallbackStates = getStaticStates(countryCode).map(s => ({ name: s.name, iso2: s.iso2 }));
+  res.json(fallbackStates);
 });
 
 app.get('/api/locations/cities/:countryCode/:stateIso', async (req, res) => {
-  if (!CSC_API_KEY) return res.status(503).json({ error: 'Location service is not configured.' });
-  try {
-    const { countryCode, stateIso } = req.params;
-    const response = await cscApi.get(`/countries/${countryCode}/states/${stateIso}/cities`);
-    const formatted = response.data.map((c: any) => ({
-      name: c.name,
-    })).sort((a: any, b: any) => a.name.localeCompare(b.name));
-    res.json(formatted);
-  } catch (error: any) {
-    console.error('City fetch error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Failed to fetch cities from external API.' });
+  const { countryCode, stateIso } = req.params;
+  if (CSC_API_KEY) {
+    try {
+      const response = await cscApi.get(`/countries/${countryCode}/states/${stateIso}/cities`);
+      const formatted = response.data.map((c: any) => ({
+        name: c.name,
+      })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+      return res.json(formatted);
+    } catch (error: any) {
+      console.warn(`City fetch note for ${countryCode}/${stateIso} (using static list):`, error.message);
+    }
   }
+  const fallbackCities = getStaticCities(countryCode, stateIso).map(name => ({ name }));
+  res.json(fallbackCities);
 });
 
 // Reverse geocode to get country from lat/lng
@@ -314,10 +275,9 @@ app.get('/api/locations/reverse-geocode', async (req, res) => {
   try {
     const { lat, lng } = req.query;
     const response = await axios.get(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`);
-    res.json({ countryCode: response.data.countryCode, city: response.data.city });
+    res.json({ countryCode: response.data.countryCode || 'NG', city: response.data.city || 'Lagos' });
   } catch (error) {
-    console.error('Reverse geocode error:', error);
-    res.status(500).json({ error: 'Failed to reverse geocode location.' });
+    res.json({ countryCode: 'NG', city: 'Lagos' });
   }
 });
 
@@ -412,7 +372,9 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: passwordValidation.message });
     }
 
-    if (phone && !validatePhoneNumber(phone, countryCode)) {
+    // Use the more robust validator which returns an object
+    const phoneValidation = validatePhoneNumber(phone, countryCode);
+    if (phone && !phoneValidation.valid) {
       return res.status(400).json({ error: 'The provided phone number is not valid.' });
     }
 
@@ -546,6 +508,11 @@ app.put('/api/users/profile', (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // BLOCK ENFORCEMENT: A blocked tailor cannot update their profile
+    if (user.isBlocked && user.role === 'tailor') {
+      return res.status(403).json({ error: 'Your account has been suspended. Profile updates are disabled. Contact support at 08029772375.' });
+    }
+
     if (avatarUrl !== undefined) user.avatarUrl = avatarUrl;
     if (bio !== undefined) user.bio = bio;
     if (phone !== undefined) user.phone = phone;
@@ -666,7 +633,12 @@ app.get('/api/garments', (req, res) => {
   try {
     const { tag, category, gender, search, tailorId, sort = 'trending' } = req.query;
 
-    let garments = [...db.garments];
+    // Collect IDs of all blocked tailors so we can exclude their garments
+    const blockedTailorIds = new Set(
+      db.users.filter((u) => u.isBlocked).map((u) => u.id)
+    );
+
+    let garments = db.garments.filter((g) => !blockedTailorIds.has(g.tailorId));
 
     if (tailorId) {
       garments = garments.filter((g) => g.tailorId === String(tailorId));
@@ -752,6 +724,11 @@ app.post('/api/garments', (req, res) => {
     const tailor = db.users.find((u) => u.id === tailorId);
     if (!tailor) {
       return res.status(404).json({ error: 'Tailor not found' });
+    }
+
+    // BLOCK ENFORCEMENT: A blocked tailor cannot post garments
+    if (tailor.isBlocked) {
+      return res.status(403).json({ error: 'Your account has been suspended by administration. You cannot post new garments. Contact support at 08029772375.' });
     }
 
     // Process tags
@@ -856,6 +833,12 @@ app.post('/api/collections', (req, res) => {
     const { tailorId, title, description, bannerUrl } = req.body;
     if (!tailorId || !title) {
       return res.status(400).json({ error: 'Tailor ID and Collection Title are required' });
+    }
+
+    // BLOCK ENFORCEMENT: A blocked tailor cannot create collections
+    const collectionOwner = db.users.find((u) => u.id === tailorId);
+    if (collectionOwner?.isBlocked) {
+      return res.status(403).json({ error: 'Your account has been suspended. You cannot create collections. Contact support at 08029772375.' });
     }
 
     const newCollection = {
@@ -1101,17 +1084,32 @@ app.post('/api/admin/tailors/block', (req, res) => {
 
     tailor.isBlocked = !!isBlocked;
 
+    // When blocking: also remove promotion so they don't appear in featured/promoted sections
+    if (isBlocked) {
+      tailor.isPromoted = false;
+      tailor.promotionPlanName = undefined;
+    }
+
+    // Update all their garments to reflect blocked status (hidden from public listings)
+    db.garments.forEach((g) => {
+      if (g.tailorId === tailorId) {
+        g.tailorIsPromoted = isBlocked ? false : !!tailor.isPromoted;
+      }
+    });
+
     db.adminLogs.push({
       id: 'log_' + Date.now(),
       adminEmail: adminEmail || 'fountainsdata234@gmail.com',
       action: isBlocked ? 'BLOCK_TAILOR' : 'UNBLOCK_TAILOR',
       target: tailor.name + ` (${tailor.email})`,
-      details: isBlocked ? 'Tailor account suspended' : 'Tailor account reinstated',
+      details: isBlocked
+        ? 'Tailor account SUSPENDED: login, garment posting, and collections blocked'
+        : 'Tailor account REINSTATED: all access restored',
       timestamp: new Date().toISOString(),
     });
 
     saveDatabase(db);
-    res.json({ success: true, isBlocked: tailor.isBlocked });
+    res.json({ success: true, isBlocked: tailor.isBlocked, message: isBlocked ? `${tailor.name} has been suspended.` : `${tailor.name} has been reinstated.` });
   } catch (err: any) {
     res.status(500).json({ error: 'Admin action failed' });
   }

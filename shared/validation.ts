@@ -135,7 +135,7 @@ export const validatePassword = (password: string): { valid: boolean; message: s
     if (!/[A-Z]/.test(password)) return { valid: false, message: 'Password must contain an uppercase letter.' };
     if (!/[a-z]/.test(password)) return { valid: false, message: 'Password must contain a lowercase letter.' };
     if (!/\d/.test(password)) return { valid: false, message: 'Password must contain a number.' };
-    if (!/[!@#$%^&*(),.?"":{}|<>]/.test(password)) return { valid: false, message: 'Password must contain a special character.' };
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(password)) return { valid: false, message: 'Password must contain a special character.' };
     return { valid: true, message: 'Password is strong' };
 };
 

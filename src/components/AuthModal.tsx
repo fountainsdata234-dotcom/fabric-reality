@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Scissors, UserCheck, Shield, Sparkles, Upload, Eye, EyeOff, Globe, CheckCircle2, Phone } from 'lucide-react';
-import { COUNTRIES, generateAvatarUrl, POPULAR_TAGS } from '../data/countries';
-import { validatePassword, validatePhoneNumber, sanitizePhoneInput, sanitizeAddressInput, getPhoneHint, formatPhoneAsYouType } from '../data/locations';
-import { api } from '../services/api';
+import { generateAvatarUrl, POPULAR_TAGS, COUNTRIES } from '../data/countries';
+import { validatePassword, validatePhoneNumber, sanitizePhoneInput, sanitizeAddressInput, getPhoneHint, formatPhoneAsYouType } from '../data/validation';
 import { User, UserRole, CountryInfo as Country } from '../types';
+import { api } from '../services/api';
 import { Logo } from './Logo';
 
 interface AuthModalProps {
@@ -29,7 +29,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   initialMode = 'register_tailor',
   onSuccess,
-  onOpenLegal
+  onOpenLegal,
 }) => {
   const [mode, setMode] = useState<'login' | 'register_tailor' | 'register_customer'>(initialMode);
   const [showPassword, setShowPassword] = useState(false);
@@ -232,10 +232,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       ? { name: 'Loading Countries...', code: '', dialCode: '+', flag: '' }
       : { name: 'Select Country', code: '', dialCode: '+', flag: '🌍' }
     );
-
-  const handleLegalClick = (type: 'terms' | 'privacy') => {
-    if (onOpenLegal) onOpenLegal(type);
-  };
 
   const toggleSpecialty = (tag: string) => {
     if (selectedSpecialties.includes(tag)) {
@@ -860,7 +856,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     I agree to the{' '}
                     <button
                       type="button"
-                      onClick={() => handleLegalClick('terms')}
+                      onClick={() => onOpenLegal?.('terms')}
                       className="text-amber-400 hover:underline font-medium"
                     >
                       Terms of Service
@@ -868,7 +864,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     and{' '}
                     <button
                       type="button"
-                      onClick={() => handleLegalClick('privacy')}
+                      onClick={() => onOpenLegal?.('privacy')}
                       className="text-amber-400 hover:underline font-medium"
                     >
                       Privacy Policy
@@ -908,7 +904,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       ? 'Sign In to Fabric Reality'
                       : mode === 'register_customer'
                         ? 'Create Customer Account'
-                        : 'Create Customer Account'}
+                        : 'Create Tailor Account'}
                   </span>
                 </>
               )}

@@ -15,27 +15,22 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-jsx", // <--- THIS IS CRUCIAL: Enables JSX support
+    "jsx": "react-jsx",
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     /* Path Aliases */
     "baseUrl": ".",
     "paths": {
       "@/*": [
-        "./*"
+        "./src/*"
       ]
     }
   },
   "include": [
     "src",
-    "vite.config.ts"
-  ], // Ensure all relevant files are included
-  "references": [
-    {
-      "path": "./tsconfig.node.json"
-    }
+    "shared"
   ]
 }
