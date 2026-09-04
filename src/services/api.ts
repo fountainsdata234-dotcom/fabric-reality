@@ -563,7 +563,21 @@ export const api = {
 
     const res = await safeFetch<{ garments: Garment[] }>(`/api/garments?${query.toString()}`);
     if (res.ok && res.data?.garments) {
-      return res.data;
+      // Merge server-side garments with any local client-side garments
+      // (helps when the app is using a localStorage fallback for new posts)
+      try {
+        const db = loadClientDb();
+        const serverGarments = res.data.garments || [];
+        const merged: Garment[] = [...serverGarments];
+        for (const localG of db.garments) {
+          if (!merged.find((g) => g.id === localG.id)) {
+            merged.unshift(localG);
+          }
+        }
+        return { garments: merged };
+      } catch (e) {
+        return res.data;
+      }
     }
 
     const db = loadClientDb();

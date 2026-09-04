@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import axios from 'axios';
 import dotenv from 'dotenv';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import bcrypt from 'bcrypt';
 import { createServer as createViteServer } from 'vite';
 import { validatePassword, validatePhoneNumber } from './shared/validation';
@@ -196,8 +196,81 @@ function saveDatabase(db: DatabaseSchema) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+
+    // Also attempt to persist the DB to S3 when available so deployments
+    // on serverless platforms (Vercel) can access a shared, persistent copy.
+    if (s3Client && BUCKET_NAME) {
+      const s3Key = process.env.S3_DB_KEY || 'db.json';
+      const body = JSON.stringify(db, null, 2);
+      const putParams = {
+        Bucket: BUCKET_NAME,
+        Key: s3Key,
+        Body: body,
+        ContentType: 'application/json',
+      };
+      // Fire-and-forget upload; log errors but don't block request flow
+      s3Client.send(new PutObjectCommand(putParams)).then(() => {
+        console.log('Database snapshot saved to S3:', s3Key);
+      }).catch((err: any) => {
+        console.warn('Could not save database snapshot to S3:', err?.message || err);
+      });
+    }
   } catch (err) {
     console.warn('Note: Could not save db file to disk (in-memory mode):', err);
+    // Even if local write fails, still try S3 persistence
+    if (s3Client && BUCKET_NAME) {
+      const s3Key = process.env.S3_DB_KEY || 'db.json';
+      const body = JSON.stringify(db, null, 2);
+      const putParams = {
+        Bucket: BUCKET_NAME,
+        Key: s3Key,
+        Body: body,
+        ContentType: 'application/json',
+      };
+      s3Client.send(new PutObjectCommand(putParams)).then(() => {
+        console.log('Database snapshot saved to S3 after local write failure:', s3Key);
+      }).catch((err: any) => {
+        console.warn('Could not save database snapshot to S3 after local write failure:', err?.message || err);
+      });
+    }
+  }
+}
+
+// Attempt to load DB snapshot from S3 and replace in-memory DB when available.
+async function tryLoadDbFromS3() {
+  if (!s3Client || !BUCKET_NAME) return;
+  const s3Key = process.env.S3_DB_KEY || 'db.json';
+  try {
+    const getCmd = new GetObjectCommand({ Bucket: BUCKET_NAME, Key: s3Key });
+    const res = await s3Client.send(getCmd);
+    const stream = res.Body as any;
+    let data = '';
+    if (stream && typeof stream.on === 'function') {
+      // Readable stream
+      for await (const chunk of stream) {
+        data += chunk;
+      }
+    } else if (typeof stream === 'string') {
+      data = stream;
+    } else if (stream && typeof stream.transformToString === 'function') {
+      data = await stream.transformToString();
+    }
+
+    if (data) {
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed === 'object') {
+        db = parsed as DatabaseSchema;
+        console.log('Loaded database snapshot from S3:', s3Key);
+        // Ensure local file copy exists for local dev
+        try {
+          fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('No S3 DB snapshot found or failed to load:', err?.message || err);
   }
 }
 
@@ -1297,6 +1370,13 @@ app.get('/api/admin/dashboard', (_req, res) => {
 async function startLocalServer() {
   const PORT = Number(process.env.PORT) || 3001; // Ensure PORT is a number
 
+  // Try to load DB snapshot from S3 when starting (helps serverless deployments)
+  try {
+    await tryLoadDbFromS3();
+  } catch (err) {
+    console.warn('S3 DB load on startup failed:', err);
+  }
+
   // --- Vite Middleware for Development / Static serving for Production ---
   // This MUST be placed AFTER all API routes.
   if (process.env.NODE_ENV !== 'production') {
@@ -1326,3 +1406,25 @@ if (process.env.NODE_ENV !== 'production') {
 
 // Export the app for Vercel
 export default app;
+
+// --- Lightweight Health & Debug Endpoints ---
+app.get('/api/health', (_req, res) => {
+  res.json({ success: true, environment: process.env.NODE_ENV || 'development' });
+});
+
+// Debug: Return current in-memory DB snapshot when admin query matches.
+app.get('/api/admin/db', (req, res) => {
+  const adminEmail = String(req.query.adminEmail || '');
+  const allowed = process.env.DEBUG_ADMIN_EMAIL || 'fountainsdata234@gmail.com';
+  if (adminEmail !== allowed) {
+    return res.status(403).json({ success: false, error: 'Forbidden' });
+  }
+  res.json({ success: true, db });
+});
+
+// Centralized error handler to return JSON and log stack traces
+// Must be registered after all routes
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error('Unhandled error:', err && err.stack ? err.stack : err);
+  res.status(err?.status || 500).json({ success: false, error: err?.message || 'Internal Server Error' });
+});
