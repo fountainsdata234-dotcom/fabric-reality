@@ -4,8 +4,7 @@ import fs from 'fs';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-import bcrypt from 'bcrypt';
-import { createServer as createViteServer } from 'vite';
+import bcrypt from 'bcryptjs';
 import { validatePassword, validatePhoneNumber } from './shared/validation';
 import { COUNTRIES } from './src/data/countries';
 import { getStaticStates, getStaticCities } from './src/data/locationData';
@@ -53,11 +52,16 @@ if (!CSC_API_KEY) {
 }
 
 // --- Local File Database Persistence ---
-const DATA_DIR = path.join(process.cwd(), 'data');
+const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const DATA_DIR = isServerless ? path.join('/tmp', 'data') : path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (err) {
+  console.warn('Note: Local data directory could not be created (using memory fallback):', err);
 }
 
 interface DatabaseSchema {
@@ -1380,6 +1384,8 @@ async function startLocalServer() {
   // --- Vite Middleware for Development / Static serving for Production ---
   // This MUST be placed AFTER all API routes.
   if (process.env.NODE_ENV !== 'production') {
+    // Dynamic import so vite (a devDependency) is NEVER loaded in production
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -1397,15 +1403,6 @@ async function startLocalServer() {
     console.log(`Fabric Reality Server running at http://localhost:${PORT}`);
   });
 }
-
-if (process.env.NODE_ENV !== 'production') {
-  startLocalServer().catch((err) => {
-    console.error('Failed to start local server:', err);
-  });
-}
-
-// Export the app for Vercel
-export default app;
 
 // --- Lightweight Health & Debug Endpoints ---
 app.get('/api/health', (_req, res) => {
@@ -1428,3 +1425,12 @@ app.use((err: any, _req: any, res: any, _next: any) => {
   console.error('Unhandled error:', err && err.stack ? err.stack : err);
   res.status(err?.status || 500).json({ success: false, error: err?.message || 'Internal Server Error' });
 });
+
+if (process.env.NODE_ENV !== 'production') {
+  startLocalServer().catch((err) => {
+    console.error('Failed to start local server:', err);
+  });
+}
+
+// Export the app for Vercel
+export default app;
