@@ -292,6 +292,14 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Normalize API route paths for serverless environments (Vercel rewrites)
+app.use((req, _res, next) => {
+  if (req.url && !req.url.startsWith('/api') && !req.url.startsWith('/assets') && !req.url.startsWith('/src')) {
+    req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
+  }
+  next();
+});
+
 app.get('/api/locations/countries', async (_req, res) => {
   if (CSC_API_KEY) {
     try {
