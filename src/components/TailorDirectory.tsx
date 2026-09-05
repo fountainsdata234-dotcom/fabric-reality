@@ -36,7 +36,7 @@ export const TailorDirectory: React.FC<TailorDirectoryProps> = ({
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCountry, setSelectedCountry] = useState<string>(currentUser?.country || '');
+  const [selectedCountry, setSelectedCountry] = useState<string>('');
   const [selectedState, setSelectedState] = useState<string>('');
   const [selectedCity, setSelectedCity] = useState<string>('');
   const [followingMap, setFollowingMap] = useState<Record<string, boolean>>({});

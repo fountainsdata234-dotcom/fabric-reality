@@ -577,6 +577,35 @@ app.get("/api/locations/reverse-geocode", async (req, res) => {
     res.json({ countryCode: "NG", city: "Lagos" });
   }
 });
+app.get("/api/storage/:folder/:key", async (req, res) => {
+  const { folder, key } = req.params;
+  const s3Key = `${folder}/${key}`;
+  if (!s3Client || !BUCKET_NAME) {
+    return res.status(404).send("Image not found");
+  }
+  try {
+    const command = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: s3Key
+    });
+    const response = await s3Client.send(command);
+    if (response.ContentType) {
+      res.setHeader("Content-Type", response.ContentType);
+    }
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    const stream = response.Body;
+    if (stream && typeof stream.pipe === "function") {
+      stream.pipe(res);
+    } else if (stream && typeof stream.transformToByteArray === "function") {
+      const bytes = await stream.transformToByteArray();
+      res.send(Buffer.from(bytes));
+    } else {
+      res.status(404).send("Not readable");
+    }
+  } catch (err) {
+    res.status(404).send("Image not found");
+  }
+});
 app.post("/api/upload", async (req, res) => {
   try {
     const { imageBase64, filename, contentType = "image/jpeg", folder = "garments" } = req.body;
@@ -595,7 +624,6 @@ app.post("/api/upload", async (req, res) => {
     const extension = detectedType.split("/")[1] || "jpg";
     const cleanName = (filename || `cloth_${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, "");
     const s3Key = `${folder}/${Date.now()}_${cleanName}.${extension}`;
-    let publicUrl = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
     let uploadedToS3 = false;
     if (s3Client) {
       try {
@@ -611,7 +639,8 @@ app.post("/api/upload", async (req, res) => {
         console.warn("Direct S3 Put warning (falling back to inline storage URL):", s3Err?.message || s3Err);
       }
     }
-    const finalUrl = uploadedToS3 ? publicUrl : `data:${detectedType};base64,${buffer.toString("base64")}`;
+    const proxyUrl = `/api/storage/${s3Key}`;
+    const finalUrl = uploadedToS3 ? proxyUrl : `data:${detectedType};base64,${buffer.toString("base64")}`;
     res.json({
       success: true,
       url: finalUrl,
@@ -693,7 +722,7 @@ app.post("/api/auth/register", async (req, res) => {
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     db.users.push(newUser);
-    saveDatabase(db);
+    await saveDatabase(db);
     const { password: _, ...safeUser } = newUser;
     res.json({ success: true, user: safeUser, token: "jwt_" + newUser.id });
   } catch (err) {
@@ -733,7 +762,7 @@ app.post("/api/auth/login", async (req, res) => {
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         };
         db.users.push(adminUser);
-        saveDatabase(db);
+        await saveDatabase(db);
       } else {
         adminUser.role = "admin";
       }
@@ -802,8 +831,11 @@ app.get("/api/tailors", (req, res) => {
     if (promotedOnly === "true") {
       tailors = tailors.filter((t) => t.isPromoted);
     }
-    if (country) {
-      tailors = tailors.filter((t) => t.country?.toLowerCase() === String(country).toLowerCase());
+    if (country && country !== "All" && country !== "All Countries" && country !== "undefined") {
+      const qCountry = String(country).toLowerCase().trim();
+      tailors = tailors.filter(
+        (t) => t.country?.toLowerCase() === qCountry || t.countryCode?.toLowerCase() === qCountry || t.country?.toLowerCase().includes(qCountry)
+      );
     }
     if (city) {
       tailors = tailors.filter((t) => t.city?.toLowerCase().includes(String(city).toLowerCase()));
@@ -840,6 +872,9 @@ app.get("/api/tailors/:id", (req, res) => {
     const tailor = db.users.find((u) => u.id === req.params.id && u.role === "tailor");
     if (!tailor) {
       return res.status(404).json({ error: "Tailor not found" });
+    }
+    if (tailor.isBlocked) {
+      return res.status(403).json({ error: "This tailor account has been suspended by administration." });
     }
     const garments = db.garments.filter((g) => g.tailorId === tailor.id);
     const collections = db.collections.filter((c) => c.tailorId === tailor.id);

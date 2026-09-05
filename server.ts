@@ -370,6 +370,37 @@ app.get('/api/locations/reverse-geocode', async (req, res) => {
   }
 });
 
+// S3 / Storage proxy endpoint so images ALWAYS load for all users even if bucket is private
+app.get('/api/storage/:folder/:key', async (req, res) => {
+  const { folder, key } = req.params;
+  const s3Key = `${folder}/${key}`;
+  if (!s3Client || !BUCKET_NAME) {
+    return res.status(404).send('Image not found');
+  }
+  try {
+    const command = new GetObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: s3Key,
+    });
+    const response = await s3Client.send(command);
+    if (response.ContentType) {
+      res.setHeader('Content-Type', response.ContentType);
+    }
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    const stream = response.Body as any;
+    if (stream && typeof stream.pipe === 'function') {
+      stream.pipe(res);
+    } else if (stream && typeof stream.transformToByteArray === 'function') {
+      const bytes = await stream.transformToByteArray();
+      res.send(Buffer.from(bytes));
+    } else {
+      res.status(404).send('Not readable');
+    }
+  } catch (err: any) {
+    res.status(404).send('Image not found');
+  }
+});
+
 // 1. AWS S3 Upload Endpoint
 app.post('/api/upload', async (req, res) => {
   try {
@@ -395,7 +426,6 @@ app.post('/api/upload', async (req, res) => {
     const cleanName = (filename || `cloth_${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '');
     const s3Key = `${folder}/${Date.now()}_${cleanName}.${extension}`;
 
-    let publicUrl = `https://${BUCKET_NAME}.s3.${AWS_REGION}.amazonaws.com/${s3Key}`;
     let uploadedToS3 = false;
 
     if (s3Client) {
@@ -413,9 +443,10 @@ app.post('/api/upload', async (req, res) => {
       }
     }
 
-    // If S3 bucket public ACL is restricted, provide the safe data URI fallback or generated s3 url
+    // Use the reliable proxy URL or base64 fallback
+    const proxyUrl = `/api/storage/${s3Key}`;
     const finalUrl = uploadedToS3
-      ? publicUrl
+      ? proxyUrl
       : `data:${detectedType};base64,${buffer.toString('base64')}`;
 
     res.json({
@@ -510,7 +541,7 @@ app.post('/api/auth/register', async (req, res) => {
     };
 
     db.users.push(newUser);
-    saveDatabase(db);
+    await saveDatabase(db);
 
     const { password: _, ...safeUser } = newUser;
     res.json({ success: true, user: safeUser, token: 'jwt_' + newUser.id });
@@ -558,7 +589,7 @@ app.post('/api/auth/login', async (req, res) => {
           createdAt: new Date().toISOString(),
         };
         db.users.push(adminUser);
-        saveDatabase(db);
+        await saveDatabase(db);
       } else {
         adminUser.role = 'admin';
       }
@@ -639,14 +670,21 @@ app.get('/api/tailors', (req, res) => {
   try {
     const { country, state, city, search, tag, promotedOnly } = req.query;
 
+    // By default, do not return blocked tailors to the public
     let tailors = db.users.filter((u) => u.role === 'tailor' && !u.isBlocked);
 
     if (promotedOnly === 'true') {
       tailors = tailors.filter((t) => t.isPromoted);
     }
 
-    if (country) {
-      tailors = tailors.filter((t) => t.country?.toLowerCase() === String(country).toLowerCase());
+    if (country && country !== 'All' && country !== 'All Countries' && country !== 'undefined') {
+      const qCountry = String(country).toLowerCase().trim();
+      tailors = tailors.filter(
+        (t) =>
+          t.country?.toLowerCase() === qCountry ||
+          t.countryCode?.toLowerCase() === qCountry ||
+          t.country?.toLowerCase().includes(qCountry)
+      );
     }
 
     if (city) {
@@ -698,6 +736,11 @@ app.get('/api/tailors/:id', (req, res) => {
     const tailor = db.users.find((u) => u.id === req.params.id && u.role === 'tailor');
     if (!tailor) {
       return res.status(404).json({ error: 'Tailor not found' });
+    }
+
+    // Block enforcement: Blocked tailor profiles cannot be viewed publicly
+    if (tailor.isBlocked) {
+      return res.status(403).json({ error: 'This tailor account has been suspended by administration.' });
     }
 
     const garments = db.garments.filter((g) => g.tailorId === tailor.id);
