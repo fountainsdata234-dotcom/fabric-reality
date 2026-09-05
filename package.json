@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && esbuild server.ts --bundle --platform=node --target=node18 --format=esm --outfile=api/index.js --external:express --external:dotenv --external:axios --external:bcryptjs --external:@aws-sdk/client-s3 --external:vite",
     "start": "node server.ts",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
