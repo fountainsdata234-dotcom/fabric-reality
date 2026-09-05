@@ -194,54 +194,45 @@ function loadDatabase(): DatabaseSchema {
   return initialDb;
 }
 
-function saveDatabase(db: DatabaseSchema) {
+async function saveDatabase(database: DatabaseSchema) {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
-
-    // Also attempt to persist the DB to S3 when available so deployments
-    // on serverless platforms (Vercel) can access a shared, persistent copy.
-    if (s3Client && BUCKET_NAME) {
-      const s3Key = process.env.S3_DB_KEY || 'db.json';
-      const body = JSON.stringify(db, null, 2);
-      const putParams = {
-        Bucket: BUCKET_NAME,
-        Key: s3Key,
-        Body: body,
-        ContentType: 'application/json',
-      };
-      // Fire-and-forget upload; log errors but don't block request flow
-      s3Client.send(new PutObjectCommand(putParams)).then(() => {
-        console.log('Database snapshot saved to S3:', s3Key);
-      }).catch((err: any) => {
-        console.warn('Could not save database snapshot to S3:', err?.message || err);
-      });
-    }
+    fs.writeFileSync(DB_FILE, JSON.stringify(database, null, 2), 'utf-8');
   } catch (err) {
     console.warn('Note: Could not save db file to disk (in-memory mode):', err);
-    // Even if local write fails, still try S3 persistence
-    if (s3Client && BUCKET_NAME) {
-      const s3Key = process.env.S3_DB_KEY || 'db.json';
-      const body = JSON.stringify(db, null, 2);
-      const putParams = {
-        Bucket: BUCKET_NAME,
-        Key: s3Key,
-        Body: body,
-        ContentType: 'application/json',
-      };
-      s3Client.send(new PutObjectCommand(putParams)).then(() => {
-        console.log('Database snapshot saved to S3 after local write failure:', s3Key);
-      }).catch((err: any) => {
-        console.warn('Could not save database snapshot to S3 after local write failure:', err?.message || err);
-      });
+  }
+
+  // Persist DB to S3 so all serverless instances and users share the exact same state
+  if (s3Client && BUCKET_NAME) {
+    const s3Key = process.env.S3_DB_KEY || 'db.json';
+    const body = JSON.stringify(database, null, 2);
+    const putParams = {
+      Bucket: BUCKET_NAME,
+      Key: s3Key,
+      Body: body,
+      ContentType: 'application/json',
+    };
+    try {
+      await s3Client.send(new PutObjectCommand(putParams));
+      lastS3SyncTime = Date.now();
+      console.log('[S3 DB Save] Saved database snapshot to S3:', s3Key);
+    } catch (err: any) {
+      console.warn('[S3 DB Save] S3 persistence note:', err?.message || err);
     }
   }
 }
 
-// Attempt to load DB snapshot from S3 and replace in-memory DB when available.
-async function tryLoadDbFromS3() {
+let lastS3SyncTime = 0;
+const S3_SYNC_INTERVAL_MS = 3000; // Check for fresh DB at most every 3 seconds on reads
+
+// Synchronize in-memory DB with S3 snapshot
+async function syncDbFromS3(force = false) {
+  const now = Date.now();
+  if (!force && now - lastS3SyncTime < S3_SYNC_INTERVAL_MS) {
+    return;
+  }
   if (!s3Client || !BUCKET_NAME) return;
   const s3Key = process.env.S3_DB_KEY || 'db.json';
   try {
@@ -249,33 +240,36 @@ async function tryLoadDbFromS3() {
     const res = await s3Client.send(getCmd);
     const stream = res.Body as any;
     let data = '';
-    if (stream && typeof stream.on === 'function') {
-      // Readable stream
+    if (stream && typeof stream.transformToString === 'function') {
+      data = await stream.transformToString();
+    } else if (stream && typeof stream.on === 'function') {
       for await (const chunk of stream) {
         data += chunk;
       }
     } else if (typeof stream === 'string') {
       data = stream;
-    } else if (stream && typeof stream.transformToString === 'function') {
-      data = await stream.transformToString();
     }
 
     if (data) {
       const parsed = JSON.parse(data);
-      if (parsed && typeof parsed === 'object') {
+      if (parsed && typeof parsed === 'object' && Array.isArray(parsed.users) && Array.isArray(parsed.garments)) {
         db = parsed as DatabaseSchema;
-        console.log('Loaded database snapshot from S3:', s3Key);
-        // Ensure local file copy exists for local dev
-        try {
-          fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
-        } catch (e) {
-          // ignore
-        }
+        lastS3SyncTime = Date.now();
+        console.log(`[S3 DB Sync] Synced ${db.garments.length} garments and ${db.users.length} users from S3`);
       }
     }
   } catch (err: any) {
-    console.warn('No S3 DB snapshot found or failed to load:', err?.message || err);
+    if (err?.name === 'NoSuchKey' || err?.Code === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404) {
+      console.log('[S3 DB] No remote db.json found in S3 yet; initializing from defaults.');
+      await saveDatabase(db);
+    } else {
+      console.warn('S3 DB Sync note:', err?.message || err);
+    }
   }
+}
+
+async function tryLoadDbFromS3() {
+  await syncDbFromS3(true);
 }
 
 let db = loadDatabase();
@@ -283,6 +277,16 @@ let db = loadDatabase();
 const app = express(); // Initialize Express App
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// S3 Database Synchronization Middleware (ensures all serverless instances have latest data)
+app.use(async (_req, _res, next) => {
+  try {
+    await syncDbFromS3();
+  } catch (e) {
+    // proceed with in-memory DB if S3 is unavailable
+  }
+  next();
+});
 
 // CORS middleware
 app.use((_req, res, next) => {
@@ -585,7 +589,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // 4. Update Profile (DP Avatar, Bio, Phone, Address, Pricing, Specialties)
-app.put('/api/users/profile', (req, res) => {
+app.put('/api/users/profile', async (req, res) => {
   try {
     const { userId, avatarUrl, bio, phone, whatsappPhone, state, city, streetAddress, specialties, pricingGuide, availability } = req.body;
     const user = db.users.find((u) => u.id === userId);
@@ -622,7 +626,7 @@ app.put('/api/users/profile', (req, res) => {
       });
     }
 
-    saveDatabase(db);
+    await saveDatabase(db);
     const { password: _, ...safeUser } = user;
     res.json({ success: true, user: safeUser });
   } catch (err: any) {
@@ -784,7 +788,7 @@ app.get('/api/garments', (req, res) => {
 });
 
 // 8. Garments API: Post New Garment (Tailors only)
-app.post('/api/garments', (req, res) => {
+app.post('/api/garments', async (req, res) => {
   try {
     const {
       tailorId,
@@ -865,7 +869,7 @@ app.post('/api/garments', (req, res) => {
     };
 
     db.garments.unshift(newGarment);
-    saveDatabase(db);
+    await saveDatabase(db);
 
     res.json({ success: true, garment: newGarment });
   } catch (err: any) {
@@ -875,7 +879,7 @@ app.post('/api/garments', (req, res) => {
 });
 
 // 9. Garments API: Delete Garment (by tailor or admin)
-app.delete('/api/garments/:id', (req, res) => {
+app.delete('/api/garments/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { requesterId, requesterRole } = req.body;
@@ -905,7 +909,7 @@ app.delete('/api/garments/:id', (req, res) => {
       });
     }
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, message: 'Garment deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to delete garment' });
@@ -913,7 +917,7 @@ app.delete('/api/garments/:id', (req, res) => {
 });
 
 // 10. Collections API: Create / List
-app.post('/api/collections', (req, res) => {
+app.post('/api/collections', async (req, res) => {
   try {
     const { tailorId, title, description, bannerUrl } = req.body;
     if (!tailorId || !title) {
@@ -937,7 +941,7 @@ app.post('/api/collections', (req, res) => {
     };
 
     db.collections.push(newCollection);
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, collection: newCollection });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to create collection' });
@@ -945,7 +949,7 @@ app.post('/api/collections', (req, res) => {
 });
 
 // 11. Real-time Customer Rating & Review System (Customers Only)
-app.post('/api/reviews', (req, res) => {
+app.post('/api/reviews', async (req, res) => {
   try {
     const { garmentId, tailorId, customerId, rating, comment } = req.body;
 
@@ -998,7 +1002,7 @@ app.post('/api/reviews', (req, res) => {
     tailor.ratingCount = tailorReviews.length;
     tailor.ratingAverage = Number((totalRatings / tailorReviews.length).toFixed(1));
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, review: newReview, tailorRating: tailor.ratingAverage });
   } catch (err: any) {
     console.error('Review error:', err);
@@ -1007,7 +1011,7 @@ app.post('/api/reviews', (req, res) => {
 });
 
 // 12. Follow / Unfollow Tailors
-app.post('/api/followers/toggle', (req, res) => {
+app.post('/api/followers/toggle', async (req, res) => {
   try {
     const { followerId, targetTailorId } = req.body;
     const follower = db.users.find((u) => u.id === followerId);
@@ -1029,7 +1033,7 @@ app.post('/api/followers/toggle', (req, res) => {
       tailor.followersCount = (tailor.followersCount || 0) + 1;
     }
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({
       success: true,
       isFollowing: !isFollowing,
@@ -1042,7 +1046,7 @@ app.post('/api/followers/toggle', (req, res) => {
 });
 
 // 13. Like / Unlike Garment
-app.post('/api/garments/like', (req, res) => {
+app.post('/api/garments/like', async (req, res) => {
   try {
     const { garmentId, increment = true } = req.body;
     const garment = db.garments.find((g) => g.id === garmentId);
@@ -1056,7 +1060,7 @@ app.post('/api/garments/like', (req, res) => {
       garment.likesCount = Math.max(0, (garment.likesCount || 0) - 1);
     }
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, likesCount: garment.likesCount });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to like garment' });
@@ -1099,7 +1103,7 @@ app.get('/api/messages', (req, res) => {
   }
 });
 
-app.post('/api/messages', (req, res) => {
+app.post('/api/messages', async (req, res) => {
   try {
     const {
       senderId,
@@ -1146,7 +1150,7 @@ app.post('/api/messages', (req, res) => {
     };
 
     db.messages.push(newMessage);
-    saveDatabase(db);
+    await saveDatabase(db);
 
     res.json({ success: true, message: newMessage });
   } catch (err: any) {
@@ -1161,7 +1165,7 @@ app.get('/api/promotions', (_req, res) => {
 
 // 16. Admin Endpoints
 // - Block / Unblock Tailor 
-app.post('/api/admin/tailors/block', (req, res) => {
+app.post('/api/admin/tailors/block', async (req, res) => {
   try {
     const { tailorId, isBlocked, adminEmail } = req.body;
     const tailor = db.users.find((u) => u.id === tailorId);
@@ -1193,7 +1197,7 @@ app.post('/api/admin/tailors/block', (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, isBlocked: tailor.isBlocked, message: isBlocked ? `${tailor.name} has been suspended.` : `${tailor.name} has been reinstated.` });
   } catch (err: any) {
     res.status(500).json({ error: 'Admin action failed' });
@@ -1201,7 +1205,7 @@ app.post('/api/admin/tailors/block', (req, res) => {
 });
 
 // - Delete Tailor Account 
-app.post('/api/admin/tailors/delete', (req, res) => {
+app.post('/api/admin/tailors/delete', async (req, res) => {
   try {
     const { tailorId, adminEmail } = req.body;
     const tailorIndex = db.users.findIndex((u) => u.id === tailorId);
@@ -1222,7 +1226,7 @@ app.post('/api/admin/tailors/delete', (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, message: 'Tailor removed' });
   } catch (err: any) {
     res.status(500).json({ error: 'Delete tailor failed' });
@@ -1230,7 +1234,7 @@ app.post('/api/admin/tailors/delete', (req, res) => {
 });
 
 // - Promote Tailor (Apply promotion badge & boost rank) 
-app.post('/api/admin/promote-tailor', (req, res) => {
+app.post('/api/admin/promote-tailor', async (req, res) => {
   try {
     const { tailorId, isPromoted, planName, adminEmail } = req.body;
     const tailor = db.users.find((u) => u.id === tailorId);
@@ -1255,7 +1259,7 @@ app.post('/api/admin/promote-tailor', (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, isPromoted: tailor.isPromoted });
   } catch (err: any) {
     res.status(500).json({ error: 'Promotion update failed' });
@@ -1263,7 +1267,7 @@ app.post('/api/admin/promote-tailor', (req, res) => {
 });
 
 // - Post new Promotion Plan / Invoice setup (Admin only) 
-app.post('/api/admin/promotions', (req, res) => {
+app.post('/api/admin/promotions', async (req, res) => {
   try {
     const { name, price, durationDays, description, perks, badgeLabel, adminEmail } = req.body;
     if (!name || !price) {
@@ -1292,7 +1296,7 @@ app.post('/api/admin/promotions', (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, plan: newPlan });
   } catch (err: any) {
     res.status(500).json({ error: 'Create promotion plan failed' });
@@ -1300,7 +1304,7 @@ app.post('/api/admin/promotions', (req, res) => {
 });
 
 // - Add New Admin 
-app.post('/api/admin/add-admin', (req, res) => {
+app.post('/api/admin/add-admin', async (req, res) => {
   try {
     const { email, name, password, adminEmail } = req.body;
     if (!email || !password || !name) {
@@ -1311,7 +1315,7 @@ app.post('/api/admin/add-admin', (req, res) => {
     const existing = db.users.find((u) => u.email.toLowerCase() === cleanEmail);
     if (existing) {
       existing.role = 'admin';
-      saveDatabase(db);
+      await saveDatabase(db);
       return res.json({ success: true, message: 'Existing user elevated to Admin role' });
     }
 
@@ -1344,7 +1348,7 @@ app.post('/api/admin/add-admin', (req, res) => {
       timestamp: new Date().toISOString(),
     });
 
-    saveDatabase(db);
+    await saveDatabase(db);
     res.json({ success: true, message: 'New Admin added successfully' });
   } catch (err: any) {
     res.status(500).json({ error: 'Add admin failed' });
