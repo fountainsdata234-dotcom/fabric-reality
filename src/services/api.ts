@@ -288,14 +288,40 @@ async function safeFetch<T>(url: string, options?: RequestInit): Promise<{ ok: b
 export const api = {
   // Upload to AWS S3 / Server with Local Base64 Fallback
   async uploadImage(imageBase64: string, filename: string, folder = 'garments'): Promise<{ url: string; s3Key?: string }> {
-    const res = await safeFetch<{ url: string; s3Key?: string }>('/api/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64, filename, folder }),
-    });
+    // Try server-side upload first
+    try {
+      const res = await safeFetch<{ url: string; s3Key?: string }>('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64, filename, folder }),
+      });
 
-    if (res.ok && res.data?.url) {
-      return res.data;
+      if (res.ok && res.data?.url) {
+        return res.data;
+      }
+    } catch (e) {
+      // continue to fallback options
+    }
+
+    // If server upload failed, try Cloudinary unsigned upload from the client
+    try {
+      const cloudName = (import.meta as any).env?.VITE_CLOUDINARY_CLOUD_NAME;
+      const uploadPreset = (import.meta as any).env?.VITE_CLOUDINARY_UPLOAD_PRESET;
+      if (cloudName && uploadPreset) {
+        const url = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+        const form = new FormData();
+        // Cloudinary accepts a data-URL string in the `file` field
+        form.append('file', imageBase64);
+        form.append('upload_preset', uploadPreset);
+        const cloudRes = await fetch(url, { method: 'POST', body: form });
+        if (cloudRes.ok) {
+          const data = await cloudRes.json();
+          return { url: data.secure_url || data.url, s3Key: data.public_id };
+        }
+      }
+    } catch (e) {
+      // ignore cloudinary errors and fallback to inline
+      console.warn('Cloudinary upload failed, falling back to inline image', e);
     }
 
     // Fallback: Use base64 data-URL directly so uploads never fail on static hosting

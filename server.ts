@@ -2,6 +2,8 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import axios from 'axios';
+import crypto from 'crypto';
+import FormData from 'form-data';
 import dotenv from 'dotenv';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import bcrypt from 'bcryptjs';
@@ -458,6 +460,44 @@ app.post('/api/upload', async (req, res) => {
   } catch (err: any) {
     console.error('Upload error:', err);
     res.status(500).json({ error: 'Upload failed: ' + (err.message || err) });
+  }
+});
+
+// 1.b Cloudinary signed server upload (optional)
+app.post('/api/cloudinary/upload', async (req, res) => {
+  try {
+    const { imageBase64, filename, folder = 'garments' } = req.body;
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+    if (!cloudName || !apiKey || !apiSecret) {
+      return res.status(400).json({ error: 'Cloudinary server credentials not configured' });
+    }
+
+    if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    // Build params to sign - include folder and timestamp
+    const paramsToSign = `folder=${folder}&timestamp=${timestamp}`;
+    const signature = crypto.createHash('sha1').update(paramsToSign + apiSecret).digest('hex');
+
+    const form = new FormData();
+    form.append('file', imageBase64);
+    form.append('api_key', apiKey);
+    form.append('timestamp', String(timestamp));
+    form.append('signature', signature);
+    form.append('folder', folder);
+
+    const cloudUrl = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
+    const uploadRes = await axios.post(cloudUrl, form, { headers: form.getHeaders() });
+    if (uploadRes.status === 200 || uploadRes.status === 201) {
+      return res.json({ success: true, url: uploadRes.data.secure_url || uploadRes.data.url, public_id: uploadRes.data.public_id });
+    }
+    return res.status(500).json({ error: 'Cloudinary upload failed' });
+  } catch (err: any) {
+    console.error('Cloudinary upload error:', err?.message || err);
+    res.status(500).json({ error: 'Cloudinary upload failed' });
   }
 });
 
