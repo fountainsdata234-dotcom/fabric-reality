@@ -87,107 +87,13 @@ function getInitialClientDb(): ClientDbSchema {
     }
   ];
 
-  const defaultTailors: User[] = [
-    {
-      id: 'tailor_royal_1',
-      email: 'royalbespoke@fabricreality.com',
-      name: 'Royal Heritage Bespoke',
-      role: 'tailor',
-      avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=80',
-      country: 'Nigeria',
-      countryCode: 'NG',
-      phone: '+234 802 977 2375',
-      whatsappPhone: '+234 802 977 2375',
-      state: 'Lagos',
-      city: 'Victoria Island',
-      streetAddress: '14 Fashion Avenue',
-      specialties: ['agbada', 'senator', 'suits', 'bridal'],
-      bio: 'Master tailor with over 15 years experience crafting luxury Agbada, Senator suits, and bespoke tuxedo fits.',
-      availability: 'Mon - Sat: 8:00 AM - 7:00 PM',
-      ratingAverage: 4.9,
-      ratingCount: 28,
-      followersCount: 142,
-      isPromoted: true,
-      promotionPlanName: 'Spotlight Gold Tier',
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'tailor_accra_1',
-      email: 'accrastyle@fabricreality.com',
-      name: 'Accra Contemporary Cuts',
-      role: 'tailor',
-      avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300&auto=format&fit=crop&q=80',
-      country: 'Ghana',
-      countryCode: 'GH',
-      phone: '+233 24 123 4567',
-      whatsappPhone: '+233 24 123 4567',
-      state: 'Greater Accra',
-      city: 'East Legon',
-      streetAddress: '8 Osu Crescent',
-      specialties: ['streetwear', 'ready-to-wear', 'ankara'],
-      bio: 'Pioneering Afro-contemporary streetwear, luxury jackets, and modern fusion styling.',
-      availability: 'Mon - Fri: 9:00 AM - 6:00 PM',
-      ratingAverage: 4.8,
-      ratingCount: 19,
-      followersCount: 96,
-      isPromoted: true,
-      promotionPlanName: 'Starter Visibility Booster',
-      createdAt: new Date().toISOString()
-    }
-  ];
+  // Start without seeded demo tailors so only real registered tailors appear
+  const defaultTailors: User[] = [];
 
   return {
     users: [defaultAdmin, ...defaultTailors],
-    garments: [
-      {
-        id: 'garment_demo_1',
-        tailorId: 'tailor_royal_1',
-        tailorName: 'Royal Heritage Bespoke',
-        tailorAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=300&auto=format&fit=crop&q=80',
-        tailorCountry: 'Nigeria',
-        tailorState: 'Lagos',
-        tailorCity: 'Victoria Island',
-        tailorPhone: '+234 802 977 2375',
-        tailorWhatsapp: '+234 802 977 2375',
-        title: 'Imperial Hand-Embroidered Grand Agbada',
-        description: '4-piece bespoke royal Agbada crafted with heavyweight Swiss damask fabric and gold threading.',
-        category: 'Traditional',
-        gender: 'Men',
-        tags: ['agbada', 'embroidery', 'luxury', 'senator'],
-        price: 180000,
-        currency: 'NGN',
-        imageUrl: 'https://images.unsplash.com/photo-1594938298603-c8148c4dae35?w=800&auto=format&fit=crop&q=80',
-        likesCount: 64,
-        viewsCount: 240,
-        ratingsCount: 14,
-        averageRating: 4.9,
-        createdAt: new Date().toISOString()
-      },
-      {
-        id: 'garment_demo_2',
-        tailorId: 'tailor_accra_1',
-        tailorName: 'Accra Contemporary Cuts',
-        tailorAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=300&auto=format&fit=crop&q=80',
-        tailorCountry: 'Ghana',
-        tailorState: 'Greater Accra',
-        tailorCity: 'East Legon',
-        tailorPhone: '+233 24 123 4567',
-        tailorWhatsapp: '+233 24 123 4567',
-        title: 'Urban Afro-Fusion Bomber Jacket',
-        description: 'Handwoven Ankara print sleeves with premium waterproof outer layer and tailored cuffs.',
-        category: 'Streetwear & Urban Contemporary',
-        gender: 'Unisex',
-        tags: ['streetwear', 'ankara', 'bomber', 'ready-to-wear'],
-        price: 850,
-        currency: 'GHS',
-        imageUrl: 'https://images.unsplash.com/photo-1551028719-00167b16eac5?w=800&auto=format&fit=crop&q=80',
-        likesCount: 42,
-        viewsCount: 156,
-        ratingsCount: 8,
-        averageRating: 4.8,
-        createdAt: new Date().toISOString()
-      }
-    ],
+    // Start with no demo garments; only show garments created via registration/upload
+    garments: [],
     collections: [
       {
         id: 'col_royal_1',
